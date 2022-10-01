@@ -8,8 +8,10 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -30,7 +32,7 @@ type oneAndOnlyNumber struct {
 	numMutex   sync.RWMutex
 }
 
-func InitTheNumber(val int) *oneAndOnlyNumber {
+func initTheNumber(val int) *oneAndOnlyNumber {
 	return &oneAndOnlyNumber{
 		Number: val,
 	}
@@ -167,7 +169,7 @@ func queryResponse(event serf.Event) {
 	case "query: time":
 		result = time.Now().String()
 	}
-	responder.Respond([]byte(result))
+	_ = responder.Respond([]byte(result))
 }
 
 // Handle any of the Serf event types.
@@ -198,22 +200,22 @@ func serfEventHandler(event serf.Event) {
 // ----------------------------------------------------------------------------
 
 // Get the value in the database.
-func httpGet(response http.ResponseWriter, request *http.Request, database *oneAndOnlyNumber) {
+func httpGet(response http.ResponseWriter, _ *http.Request, database *oneAndOnlyNumber) {
 	myJson, _ := json.Marshal(database)
-	fmt.Fprintf(response, "%s", myJson)
+	_, _ = fmt.Fprintf(response, "%s", myJson)
 }
 
-//  Set the value in the database.
+// Set the value in the database.
 func httpSet(response http.ResponseWriter, request *http.Request, database *oneAndOnlyNumber) {
 	vars := mux.Vars(request)
 	newVal, err := strconv.Atoi(vars["newVal"])
 	if err != nil {
 		response.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(response, "%v", err)
+		_, _ = fmt.Fprintf(response, "%v", err)
 		return
 	}
 	database.setValue(newVal)
-	fmt.Fprintf(response, "%v", newVal)
+	_, _ = fmt.Fprintf(response, "%v", newVal)
 }
 
 // Notify other Serf members of a change in value.
@@ -222,13 +224,13 @@ func httpNotify(response http.ResponseWriter, request *http.Request, database *o
 	curVal, err := strconv.Atoi(vars["curVal"])
 	if err != nil {
 		response.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(response, "%v", err)
+		_, _ = fmt.Fprintf(response, "%v", err)
 		return
 	}
 	curGeneration, err := strconv.Atoi(vars["curGeneration"])
 	if err != nil {
 		response.WriteHeader(http.StatusBadRequest)
-		fmt.Fprintf(response, "%v", err)
+		_, _ = fmt.Fprintf(response, "%v", err)
 		return
 	}
 
@@ -272,56 +274,66 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer serfCluster.Leave()
 
-	// Initialized "internal data".
+	cancelChan := make(chan os.Signal, 1)
+	// catch SIGETRM or SIGINTERRUPT
+	signal.Notify(cancelChan, syscall.SIGTERM, syscall.SIGINT)
+	go func() {
 
-	theOneAndOnlyNumber := InitTheNumber(0)
-	
-	// Initialize HTTP routing.
-	
-	httpRouter(theOneAndOnlyNumber)
+		// Initialized "internal data".
 
-	// Create a base context with hostname, if possible.
+		theOneAndOnlyNumber := initTheNumber(0)
 
-	ctx := context.Background()
-	if name, err := os.Hostname(); err == nil {
-		ctx = context.WithValue(ctx, "name", name)
-	}
+		// Initialize HTTP routing.
 
-	// Set the time between "ticks".
+		httpRouter(theOneAndOnlyNumber)
 
-	debugDataPrinterTicker := time.Tick(time.Second * 15)
+		// Create a base context with hostname, if possible.
 
-	numberBroadcastTick := time.Second * 2
-	numberBroadcastTicker := time.Tick(numberBroadcastTick)
-
-	// Handle "ticks" and events.
-
-	for {
-		select {
-
-		// Handle events.
-
-		case event := <-eventChannel:
-			serfEventHandler(event)
-
-		// Notification among serf members.
-
-		case <-numberBroadcastTicker:
-			members := getClusterMembers(serfCluster)
-			ctx, _ := context.WithTimeout(ctx, numberBroadcastTick)
-			go notifyMembers(ctx, members, theOneAndOnlyNumber)
-
-		// Internal debugging.
-
-		case <-debugDataPrinterTicker:
-			members := serfCluster.Members()
-			for memberNumber, member := range members {
-				log.Printf("Member %d: %+v\n", memberNumber, member)
-			}
-			curVal, curGen := theOneAndOnlyNumber.getValue()
-			log.Printf("State: %v Generation: %v\n", curVal, curGen)
+		ctx := context.Background()
+		if name, err := os.Hostname(); err == nil {
+			ctx = context.WithValue(ctx, "name", name)
 		}
-	}
+
+		// Set the time between "ticks".
+
+		debugDataPrinterTicker := time.Tick(time.Second * 15)
+
+		numberBroadcastTick := time.Second * 2
+		numberBroadcastTicker := time.Tick(numberBroadcastTick)
+
+		// Handle "ticks" and events.
+
+		for {
+			select {
+
+			// Handle events.
+
+			case event := <-eventChannel:
+				serfEventHandler(event)
+
+			// Notification among serf members.
+
+			case <-numberBroadcastTicker:
+				members := getClusterMembers(serfCluster)
+				ctx, _ := context.WithTimeout(ctx, numberBroadcastTick)
+				go notifyMembers(ctx, members, theOneAndOnlyNumber)
+
+			// Internal debugging.
+
+			case <-debugDataPrinterTicker:
+				members := serfCluster.Members()
+				for memberNumber, member := range members {
+					log.Printf("Member %d: %+v\n", memberNumber, member)
+				}
+				curVal, curGen := theOneAndOnlyNumber.getValue()
+				log.Printf("State: %v Generation: %v\n", curVal, curGen)
+			}
+		}
+	}()
+	sig := <-cancelChan
+	log.Printf("Caught signal %v", sig)
+
+	_ = serfCluster.Leave()
+
 }

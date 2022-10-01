@@ -20,12 +20,13 @@ default: build-local
 
 .PHONY: build-local
 build-local:
-	go install github.com/docktermj/$(PROGRAM_NAME)
+	mkdir -p $(TARGET_DIRECTORY) || true
+	go build -o $(TARGET_DIRECTORY)/$(PROGRAM_NAME)
 
 
 .PHONY: test-local
 test-local:
-	go test github.com/docktermj/$(PROGRAM_NAME)/... 
+	go test github.com/docktermj/$(PROGRAM_NAME)/...
 
 
 # -----------------------------------------------------------------------------
@@ -59,8 +60,6 @@ docker-build:
 
 .PHONY: build-demo
 build-demo: build-local
-	mkdir -p $(TARGET_DIRECTORY) || true
-	cp ${GOPATH}/bin/$(PROGRAM_NAME) $(TARGET_DIRECTORY)
 	docker build \
 		--tag $(DOCKER_IMAGE_NAME)-demo \
 		--file demo.Dockerfile \
@@ -84,7 +83,7 @@ docker-run:
 dependencies:
 	go get -u github.com/golang/dep/cmd/dep
 	dep ensure
-	
+
 
 .PHONY: clean
 clean:
