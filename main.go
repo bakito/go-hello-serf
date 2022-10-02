@@ -4,16 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"math/rand"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	la "github.com/bakito/go-log-logr-adapter/adapter"
+	"github.com/docktermj/go-hello-serf/logger"
 	"github.com/gorilla/mux"
 	"github.com/hashicorp/serf/serf"
 	"github.com/pkg/errors"
@@ -21,6 +23,10 @@ import (
 )
 
 const MembersToNotify = 2
+
+var (
+	log = logger.New(false, true)
+)
 
 // ----------------------------------------------------------------------------
 // Exemplar "internal" data that is shared
@@ -69,11 +75,25 @@ func (n *oneAndOnlyNumber) notifyValue(curVal int, curGeneration int) bool {
 // Setup the Serf Cluster
 func setupSerfCluster(advertiseAddr string, clusterAddr string, eventChannel chan<- serf.Event) (*serf.Serf, error) {
 
-	// Configuration values.
+	// 2022/10/02 19:04:08 [DEBUG] memberlist: Failed to join 127.0.0.1:7777: dial tcp 127.0.0.1:7777: connect: connection refused
 
+	// Configuration values.
 	configuration := serf.DefaultConfig()
 	configuration.Init()
-	configuration.MemberlistConfig.AdvertiseAddr = advertiseAddr
+	configuration.Logger = la.ToStd(log)
+	configuration.NodeName = advertiseAddr
+
+	addrPort := strings.Split(advertiseAddr, ":")
+	configuration.MemberlistConfig.AdvertiseAddr = addrPort[0]
+	configuration.MemberlistConfig.Logger = configuration.Logger
+	if len(addrPort) > 1 {
+		p, err := strconv.Atoi(addrPort[1])
+		if err != nil {
+			return nil, err
+		}
+		configuration.MemberlistConfig.BindPort = p
+		configuration.MemberlistConfig.AdvertisePort = p
+	}
 	configuration.EventCh = eventChannel
 
 	// Create the Serf cluster with the configuration.
@@ -84,10 +104,11 @@ func setupSerfCluster(advertiseAddr string, clusterAddr string, eventChannel cha
 	}
 
 	// Try to join an existing Serf cluster.  If not, start a new cluster.
-
-	_, err = cluster.Join([]string{clusterAddr}, true)
-	if err != nil {
-		log.Printf("Couldn't join cluster, starting own: %v\n", err)
+	if len(clusterAddr) > 0 {
+		_, err = cluster.Join(strings.Split(clusterAddr, ","), true)
+		if err != nil {
+			log.Error(err, "Couldn't join cluster, starting own")
+		}
 	}
 
 	return cluster, nil
@@ -152,7 +173,7 @@ func notifyMembers(ctx context.Context, otherMembers []serf.Member, db *oneAndOn
 
 	err := g.Wait()
 	if err != nil {
-		log.Printf("Error when notifying other members: %v", err)
+		log.Info("Error when notifying other members: %v", err)
 	}
 }
 
@@ -174,24 +195,25 @@ func queryResponse(event serf.Event) {
 
 // Handle any of the Serf event types.
 func serfEventHandler(event serf.Event) {
+	l := log.WithValues("event", event.String())
 	switch event.EventType() {
 	case serf.EventMemberFailed:
-		log.Printf("EventMemberFailed: %s\n", event.String())
+		l.Info("EventMemberFailed")
 	case serf.EventMemberJoin:
-		log.Printf("EventMemberJoin: %s\n", event.String())
+		l.Info("EventMemberJoin")
 	case serf.EventMemberLeave:
-		log.Printf("EventMemberLeave: %s\n", event.String())
+		l.Info("EventMemberLeave")
 	case serf.EventMemberReap:
-		log.Printf("EventMemberReap: %s\n", event.String())
+		l.Info("EventMemberReap")
 	case serf.EventMemberUpdate:
-		log.Printf("EventMemberUpdate: %s\n", event.String())
+		l.Info("EventMemberUpdate")
 	case serf.EventQuery:
-		log.Printf("EventQuery: %s\n", event.String())
+		l.Info("EventQuery")
 		queryResponse(event)
 	case serf.EventUser:
-		log.Printf("EventUser: %s\n", event.String())
+		l.Info("EventUser")
 	default:
-		log.Printf("[WARN] on: Unhandled Serf Event: %#v", event)
+		l.Info("[WARN] on: Unhandled Serf Event")
 	}
 }
 
@@ -235,7 +257,7 @@ func httpNotify(response http.ResponseWriter, request *http.Request, database *o
 	}
 
 	if changed := database.notifyValue(curVal, curGeneration); changed {
-		log.Printf(
+		log.Info(
 			"NewVal: %v Gen: %v Notifier: %v",
 			curVal,
 			curGeneration,
@@ -251,7 +273,12 @@ func httpRouter(database *oneAndOnlyNumber) {
 		router.HandleFunc("/get", func(w http.ResponseWriter, r *http.Request) { httpGet(w, r, database) })
 		router.HandleFunc("/set/{newVal}", func(w http.ResponseWriter, r *http.Request) { httpSet(w, r, database) })
 		router.HandleFunc("/notify/{curVal}/{curGeneration}", func(w http.ResponseWriter, r *http.Request) { httpNotify(w, r, database) })
-		log.Fatal(http.ListenAndServe(":8080", router))
+		port := "8080"
+		if p, ok := os.LookupEnv("API_PORT"); ok {
+			port = p
+		}
+		log.Error(http.ListenAndServe(fmt.Sprintf(":%s", port), router), "")
+		os.Exit(1)
 	}()
 }
 
@@ -272,7 +299,8 @@ func main() {
 		os.Getenv("CLUSTER_ADDR"),
 		eventChannel)
 	if err != nil {
-		log.Fatal(err)
+		log.Error(err, "")
+		os.Exit(1)
 	}
 
 	cancelChan := make(chan os.Signal, 1)
@@ -324,15 +352,15 @@ func main() {
 			case <-debugDataPrinterTicker:
 				members := serfCluster.Members()
 				for memberNumber, member := range members {
-					log.Printf("Member %d: %+v\n", memberNumber, member)
+					log.Info(fmt.Sprintf("Member %d: %+v", memberNumber, member))
 				}
 				curVal, curGen := theOneAndOnlyNumber.getValue()
-				log.Printf("State: %v Generation: %v\n", curVal, curGen)
+				log.Info(fmt.Sprintf("State: %v Generation: %v", curVal, curGen))
 			}
 		}
 	}()
 	sig := <-cancelChan
-	log.Printf("Caught signal %v", sig)
+	log.WithValues("signal", sig).Info("Caught signal")
 
 	_ = serfCluster.Leave()
 

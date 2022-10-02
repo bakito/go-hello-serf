@@ -3,9 +3,13 @@ module github.com/docktermj/go-hello-serf
 go 1.19
 
 require (
+	github.com/bakito/go-log-logr-adapter v0.0.1
+	github.com/go-logr/logr v1.2.3
+	github.com/go-logr/zapr v1.2.3
 	github.com/gorilla/mux v1.6.2
 	github.com/hashicorp/serf v0.10.0
 	github.com/pkg/errors v0.9.1
+	go.uber.org/zap v1.23.0
 	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
 )
 
@@ -23,8 +27,8 @@ require (
 	github.com/hashicorp/memberlist v0.4.0 // indirect
 	github.com/miekg/dns v1.1.41 // indirect
 	github.com/sean-/seed v0.0.0-20170313163322-e2103e2c3529 // indirect
-	github.com/stretchr/testify v1.7.0 // indirect
+	go.uber.org/atomic v1.7.0 // indirect
+	go.uber.org/multierr v1.6.0 // indirect
 	golang.org/x/net v0.0.0-20211216030914-fe4d6282115f // indirect
 	golang.org/x/sys v0.0.0-20220728004956-3c1f35247d10 // indirect
-	gopkg.in/yaml.v3 v3.0.0 // indirect
 )
